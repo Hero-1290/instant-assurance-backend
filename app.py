@@ -1,23 +1,20 @@
+# app.py - FINAL CORRECTED VERSION
 import json
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 import joblib
+import traceback # <--- Add this import for detailed error logging
 from flask import Flask, request, Response
 from flask_cors import CORS
 
-# A custom JSON encoder for NumPy data types
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
         return super(NumpyEncoder, self).default(obj)
 
-# --- GLOBAL SCOPE: Load models once on startup ---
 print("Loading model...")
 model = tf.keras.models.load_model('flight_risk_model.h5')
 print("Model loaded successfully.")
@@ -26,37 +23,39 @@ print("Loading preprocessor...")
 preprocessor = joblib.load('preprocessor.joblib')
 print("Preprocessor loaded successfully.")
 
-# --- FLASK APP DEFINITION ---
 app = Flask(__name__)
-# Explicitly configure CORS for our specific endpoint to avoid browser issues
 CORS(app, resources={r"/get-premium": {"origins": "*"}})
 
-@app.route('/get-premium', methods=['POST'])
+@app.route('/get-premium', methods=['POST', 'OPTIONS'])
 def get_premium():
+    if request.method == 'OPTIONS':
+        return '', 204
+
     try:
         input_data_json = request.get_json()
-        input_data = pd.DataFrame([input_data_json])
-        input_data_processed = preprocessor.transform(input_data)
+        user_premium = float(input_data_json.get('premium', 100))
+        flight_data = pd.DataFrame([input_data_json])
+
+        input_data_processed = preprocessor.transform(flight_data)
         prediction_probability = model.predict(input_data_processed)[0][0]
         
-        # This is the risk-adjusted payout logic we finalized
+        margin = 0.15 
         payout = 0
-        premium = 0 # You would get the user's desired premium from the JSON input
-        # Example payout calculation:
-        # premium = input_data_json['premium']
-        # margin = 0.15 
-        # payout = (premium / prediction_probability) * (1 - margin)
+        if prediction_probability > 0:
+             payout = (user_premium / prediction_probability) * (1 - margin)
         
         response_body = {
             'predicted_risk': prediction_probability,
-            'premium': premium, # Send back the user's premium
-            'payout': payout # Send back the calculated payout
+            'premium': user_premium,
+            'payout': payout
         }
         json_response = json.dumps(response_body, cls=NumpyEncoder)
         return Response(json_response, mimetype='application/json', status=200)
 
     except Exception as e:
-        return Response(json.dumps({'error': str(e)}), mimetype='application/json', status=500)
+        # Provide a detailed error if something goes wrong on the backend
+        error_details = {'error': str(e), 'traceback': traceback.format_exc()}
+        return Response(json.dumps(error_details), mimetype='application/json', status=500)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
