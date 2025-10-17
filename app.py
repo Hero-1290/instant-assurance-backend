@@ -8,113 +8,146 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from keras.models import load_modcmel
+from keras.models import load_model
 
-# --- (Sections 1, 2, and 3 are unchanged) ---
 load_dotenv()
 AERODATABOX_API_KEY = os.getenv("AERODATABOX_API_KEY")
 OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 
 print("🔄 Loading model and preprocessor...")
-model = load_model('flight_risk_model_final.h5')
-preprocessor = joblib.load('preprocessor_final.joblib')
+model = load_model("flight_risk_model_final.h5")
+preprocessor = joblib.load("preprocessor_final.joblib")
 print("✅ Model and Preprocessor loaded successfully.")
 
 app = Flask(__name__)
 CORS(app)
 
+
 def get_weather_forecast(iata_code):
-    coords = {'ATL': (33.64, -84.42), 'LAX': (33.94, -118.40), 'JFK': (40.64, -73.78)}.get(iata_code)
-    if not coords: return {'Temp': 22, 'Wind': 5, 'Condition': 'Clear'}
+    coords = {
+        "ATL": (33.64, -84.42),
+        "LAX": (33.94, -118.40),
+        "JFK": (40.64, -73.78),
+    }.get(iata_code)
+    if not coords:
+        return {"Temp": 22, "Wind": 5, "Condition": "Clear"}
     lat, lon = coords
     url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={OPENWEATHERMAP_API_KEY}&units=metric"
     response = requests.get(url)
     response.raise_for_status()
-    weather = response.json()['list'][8]
-    return {'Temp': weather['main']['temp'], 'Wind': weather['wind']['speed'], 'Condition': weather['weather'][0]['main']}
+    weather = response.json()["list"][8]
+    return {
+        "Temp": weather["main"]["temp"],
+        "Wind": weather["wind"]["speed"],
+        "Condition": weather["weather"][0]["main"],
+    }
 
-@app.route('/search-flights', methods=['POST'])
+
+@app.route("/search-flights", methods=["POST"])
 def search_flights():
     try:
         data = request.get_json()
-        origin = data['origin']
-        destination = data['destination']
-        flight_date = data['date']
+        origin = data["origin"]
+        destination = data["destination"]
+        flight_date = data["date"]
 
         url = f"https://aerodatabox.p.rapidapi.com/flights/airports/iata/{origin}/{flight_date}"
         params = {"withLeg": "true", "direction": "Departure"}
-        headers = { "X-RapidAPI-Key": AERODATABOX_API_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" }
+        headers = {
+            "X-RapidAPI-Key": AERODATABOX_API_KEY,
+            "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com",
+        }
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
-        
-        departures = response.json().get('departures', [])
+
+        departures = response.json().get("departures", [])
         # ... (Your original parsing logic would go here)
-        
+
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             print("🚧 Live API failed (404). Returning mock flight data for testing.")
             base_time = datetime.fromisoformat(f"{flight_date}T09:00:00")
             mock_flights = [
-                {'Airline': 'DL', 'AirportFrom': origin, 'AirportTo': destination, 'flight_number': 'DL123', 'departureTime': base_time.isoformat(), 'duration': 245},
-                {'Airline': 'AA', 'AirportFrom': origin, 'AirportTo': destination, 'flight_number': 'AA456', 'departureTime': (base_time + timedelta(hours=2)).isoformat(), 'duration': 250},
-                {'Airline': 'UA', 'AirportFrom': origin, 'AirportTo': destination, 'flight_number': 'UA789', 'departureTime': (base_time + timedelta(hours=4)).isoformat(), 'duration': 240}
+                {
+                    "Airline": "DL",
+                    "AirportFrom": origin,
+                    "AirportTo": destination,
+                    "flight_number": "DL123",
+                    "departureTime": base_time.isoformat(),
+                    "duration": 245,
+                },
+                {
+                    "Airline": "AA",
+                    "AirportFrom": origin,
+                    "AirportTo": destination,
+                    "flight_number": "AA456",
+                    "departureTime": (base_time + timedelta(hours=2)).isoformat(),
+                    "duration": 250,
+                },
+                {
+                    "Airline": "UA",
+                    "AirportFrom": origin,
+                    "AirportTo": destination,
+                    "flight_number": "UA789",
+                    "departureTime": (base_time + timedelta(hours=4)).isoformat(),
+                    "duration": 240,
+                },
             ]
-            return jsonify({'flights': mock_flights})
+            return jsonify({"flights": mock_flights})
         else:
-            return jsonify({'error': f"Flight API error: {str(e)}"}), 500
-        
+            return jsonify({"error": f"Flight API error: {str(e)}"}), 500
+
     except Exception as e:
-        return jsonify({'error': f"An internal server error occurred: {str(e)}"}), 500
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+
 
 # --- START OF FIX ---
-@app.route('/get-quote', methods=['POST'])
+@app.route("/get-quote", methods=["POST"])
 def get_quote():
     try:
         data = request.get_json()
-        departure_dt = datetime.fromisoformat(data['departureTime'])
-        origin_weather = get_weather_forecast(data['AirportFrom'])
-        dest_weather = get_weather_forecast(data['AirportTo'])
-        
+        departure_dt = datetime.fromisoformat(data["departureTime"])
+        origin_weather = get_weather_forecast(data["AirportFrom"])
+        dest_weather = get_weather_forecast(data["AirportTo"])
+
         model_input = {
-            'Airline': data['Airline'], 'AirportFrom': data['AirportFrom'], 'AirportTo': data['AirportTo'],
-            'DayOfWeek': departure_dt.weekday() + 1, 'Time': departure_dt.hour * 60 + departure_dt.minute,
-            'Length': data['duration'], 'WeatherFrom_Temp': origin_weather['Temp'],
-            'WeatherFrom_Wind': origin_weather['Wind'], 'WeatherFrom_Condition': origin_weather['Condition'],
-            'WeatherTo_Temp': dest_weather['Temp'], 'WeatherTo_Wind': dest_weather['Wind'],
-            'WeatherTo_Condition': dest_weather['Condition']
+            "Airline": data["Airline"],
+            "AirportFrom": data["AirportFrom"],
+            "AirportTo": data["AirportTo"],
+            "DayOfWeek": departure_dt.weekday() + 1,
+            "Time": departure_dt.hour * 60 + departure_dt.minute,
+            "Length": data["duration"],
+            "WeatherFrom_Temp": origin_weather["Temp"],
+            "WeatherFrom_Wind": origin_weather["Wind"],
+            "WeatherFrom_Condition": origin_weather["Condition"],
+            "WeatherTo_Temp": dest_weather["Temp"],
+            "WeatherTo_Wind": dest_weather["Wind"],
+            "WeatherTo_Condition": dest_weather["Condition"],
         }
-        
+
         input_df = pd.DataFrame([model_input])
         processed_input = preprocessor.transform(input_df)
-        
+
         # model.predict() returns a numpy float32, which is not JSON serializable
         risk_numpy = model.predict(processed_input)[0][0]
-        
+
         # Convert the numpy types to standard Python floats
         risk = float(risk_numpy)
-        user_premium = float(data.get('premium', 100))
+        user_premium = float(data.get("premium", 100))
         margin = 0.15
         payout = float((user_premium / risk) * (1 - margin) if risk > 0 else 0)
-        
-        return jsonify({ 
-            'predicted_risk': risk, 
-            'premium': user_premium, 
-            'payout': payout 
-        })
+
+        return jsonify(
+            {"predicted_risk": risk, "premium": user_premium, "payout": payout}
+        )
     except Exception as e:
-        return jsonify({'error': f"Quote calculation failed: {str(e)}"}), 500
+        return jsonify({"error": f"Quote calculation failed: {str(e)}"}), 500
+
+
 # --- END OF FIX ---
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
 
 
 # import os
@@ -134,7 +167,7 @@ if __name__ == '__main__':
 # # --- 2. Load ML Model and Preprocessor ---
 # print("🔄 Loading model...")
 # # Ensure you are using the final model and preprocessor trained on the weather data
-# model = tf.keras.models.load_model('flight_risk_model_final.h5') 
+# model = tf.keras.models.load_model('flight_risk_model_final.h5')
 # preprocessor = joblib.load('preprocessor_final.joblib')
 # print("✅ Model and Preprocessor loaded successfully.")
 
@@ -154,7 +187,7 @@ if __name__ == '__main__':
 #     response = requests.get(url, headers=headers, params=params)
 #     response.raise_for_status()
 #     departures = response.json().get('departures', [])
-    
+
 #     for flight in departures:
 #         if flight.get('number') == flight_number:
 #             departure_time_str = flight['departure']['scheduledTimeLocal'].split('T')[1].split('+')[0]
@@ -166,7 +199,7 @@ if __name__ == '__main__':
 #             # Calculate scheduled elapsed time in minutes
 #             duration_minutes = (arrival_dt - departure_dt).total_seconds() / 60
 #             if duration_minutes < 0: duration_minutes += 1440 # Handle overnight flights
-            
+
 #             return {
 #                 'Time': departure_dt.hour * 60 + departure_dt.minute,
 #                 'Length': int(duration_minutes)
@@ -190,7 +223,7 @@ if __name__ == '__main__':
 #     # Find the forecast closest to the flight date (this is a simplified logic)
 #     # A real app would parse the flight_date and find the correct forecast entry
 #     weather = forecast_list[8] # Default to ~24 hours ahead
-    
+
 #     return {
 #         'Temp': weather['main']['temp'],
 #         'Wind': weather['wind']['speed'],
@@ -219,7 +252,7 @@ if __name__ == '__main__':
 #         # Step 3: Enrich data - Get weather for origin and destination
 #         origin_weather = get_weather_forecast(data['AirportFrom'], flight_date)
 #         dest_weather = get_weather_forecast(data['AirportTo'], flight_date)
-        
+
 #         # Step 4: Assemble the complete feature set for the model
 #         model_input = {
 #             'Airline': data['Airline'],
@@ -235,15 +268,15 @@ if __name__ == '__main__':
 #             'WeatherTo_Wind': dest_weather['Wind'],
 #             'WeatherTo_Condition': dest_weather['Condition']
 #         }
-        
+
 #         # Step 5: Preprocess, Predict, and Calculate Payout
 #         input_df = pd.DataFrame([model_input])
 #         processed_input = preprocessor.transform(input_df)
 #         risk = model.predict(processed_input)[0][0]
-        
+
 #         margin = 0.15
 #         payout = (user_premium / risk) * (1 - margin) if risk > 0 else 0
-        
+
 #         # Step 6: Return the full quote to the frontend
 #         return jsonify({
 #             'predicted_risk': float(risk),
@@ -256,8 +289,6 @@ if __name__ == '__main__':
 
 # if __name__ == '__main__':
 #     app.run(host='0.0.0.0', port=5000)
-
-
 
 
 # # # app.py - V2.2 with Single-Day Search
@@ -320,8 +351,8 @@ if __name__ == '__main__':
 # #         }
 
 # #         api_response = requests.get(url, headers=headers, params=querystring)
-# #         api_response.raise_for_status() 
-        
+# #         api_response.raise_for_status()
+
 # #         departures = api_response.json().get('departures', [])
 # #         available_flights = []
 # #         for flight in departures:
@@ -334,7 +365,7 @@ if __name__ == '__main__':
 # #                     'aircraft': flight.get('aircraft', {}).get('model', 'N/A'),
 # #                     'flightDate': flight_date # The date is now the same for all results
 # #                 })
-        
+
 # #         print(f"<-- Found {len(available_flights)} matching flights.")
 # #         return jsonify({'flights': available_flights})
 
@@ -344,7 +375,7 @@ if __name__ == '__main__':
 # #             return jsonify({'flights': []})
 # #         else:
 # #             return jsonify({'error': f'Flight API error: {http_err.response.text}'}), http_err.response.status_code
-            
+
 # #     except Exception as e:
 # #         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
@@ -359,7 +390,7 @@ if __name__ == '__main__':
 # #         flight_data = pd.DataFrame([input_data_json])
 # #         input_data_processed = preprocessor.transform(flight_data)
 # #         prediction_probability = model.predict(input_data_processed)[0][0]
-# #         margin = 0.15 
+# #         margin = 0.15
 # #         payout = 0
 # #         if prediction_probability > 0:
 # #              payout = (user_premium / prediction_probability) * (1 - margin)
@@ -372,18 +403,6 @@ if __name__ == '__main__':
 
 # # if __name__ == '__main__':
 # #     app.run(host='0.0.0.0', port=5000)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # # # app.py - FINAL CORRECTED VERSION
@@ -426,12 +445,12 @@ if __name__ == '__main__':
 
 # #         input_data_processed = preprocessor.transform(flight_data)
 # #         prediction_probability = model.predict(input_data_processed)[0][0]
-        
-# #         margin = 0.15 
+
+# #         margin = 0.15
 # #         payout = 0
 # #         if prediction_probability > 0:
 # #              payout = (user_premium / prediction_probability) * (1 - margin)
-        
+
 # #         response_body = {
 # #             'predicted_risk': prediction_probability,
 # #             'premium': user_premium,
