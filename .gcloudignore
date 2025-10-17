@@ -1,0 +1,25 @@
+# .gcloudignore
+
+# Ignore the virtual environment folder
+venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+.vscode/
+```
+
+### **Step 3: A Quick Check of Your Model Files**
+
+Your screenshot shows you have two sets of model files (e.g., `flight_risk_model.h5` and `flight_risk_model_final.h5`).
+
+Please double-check your `app.py` file to ensure it's loading the correct ones you intend to use in production. For example, if you want to use the "final" versions, your code should look like this:
+
+```python
+# In app.py
+...
+model = tf.keras.models.load_model('flight_risk_model_final.h5')
+...
+preprocessor = joblib.load('preprocessor_final.joblib')
+...
+
